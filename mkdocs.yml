@@ -1,0 +1,63 @@
+site_name: Solana Kit
+site_url: https://solana-kit.com
+theme:
+  name: material
+  font:
+    text: Inter
+    code: JetBrains Mono
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  palette:
+    - scheme: slate
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - scheme: default
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.footer
+    - navigation.instant
+    - navigation.instant.preview
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.tabs.link
+    - content.code.copy
+
+markdown_extensions:
+  - attr_list
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lowe
+  - admonition
+  - pymdownx.details
+  - md_in_html
+
+nav:
+  - index.md
+  - upgrade-guide.md
+  - compatible-clients.md
+  - "Get Started":
+      - getting-started/getting-started.md
+      - getting-started/set-up-project.md
+      - getting-started/generate-signer.md
+      - getting-started/create-instructions.md
+      - getting-started/build-transaction.md
+      - getting-started/send-transaction.md
+      - getting-started/fetch-an-account.md

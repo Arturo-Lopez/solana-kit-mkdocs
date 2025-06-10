@@ -1,0 +1,442 @@
+---
+title: Upgrade Guide
+description: Upgrade your Web3.js project to Kit
+---
+
+## Why upgrade?
+
+Kit (formerly Web3.js v2) is a complete rewrite of [the Web3.js library](https://github.com/solana-foundation/solana-web3.js). It is designed to be more composable, customizable, and efficient than its predecessor. Its functional design enables the entire library to be tree-shaken, drastically reducing your bundle size. It also takes advantage of modern JavaScript features — such as native `Ed25519` key support and `bigint` for large values — resulting in an even smaller bundle, better performance and most importantly, a reduced attack surface for your application.
+
+Unlike Web3.js, Kit doesn't rely on JavaScript classes or other non-tree-shakeable features. This brings us to our first key difference.
+
+## Where's my `Connection` class?
+
+In Web3.js, the `Connection` class serves as a central entry point, making the library's API easier to discover via a single object. However, this comes at a cost: using the `Connection` class forces you to bundle every method it provides, even if you only use a few. As a result, your users must download the entire library, even when most of it goes unused.
+
+To avoid this, Kit does not include a single entry-point class like `Connection`. Instead, it offers a set of functions that you can import and use as needed. Two key functions replace most of the `Connection` class's functionality: `createSolanaRpc` and `createSolanaRpcSubscriptions`.
+
+The former, `createSolanaRpc`, returns an Rpc object for making RPC requests to a specified endpoint. [Read more about RPCs here]().
+
+```ts title="Web3.js"
+import { Connection, PublicKey } from "@solana/web3.js";
+
+// Create a `Connection` object.
+const connection = new Connection("https://api.devnet.solana.com", {
+  commitment: "confirmed",
+});
+
+// Send RPC requests.
+const wallet = new PublicKey("1234..5678");
+const balance = await connection.getBalance(wallet);
+```
+
+```ts title="Kit"
+import { address, createSolanaRpc } from "@solana/kit";
+
+// Create an RPC proxy object.
+const rpc = createSolanaRpc("https://api.devnet.solana.com");
+
+// Send RPC requests.
+const wallet = address("1234..5678");
+const { value: balance } = await rpc.getBalance(wallet).send();
+```
+
+The latter, `createSolanaRpcSubscriptions`, returns an `RpcSubscriptions` object, which lets you to subscribe to events on the Solana network. [Read more about RPC Subscriptions here]().
+
+```ts title="Web3.js"
+import { Connection, PublicKey } from "@solana/web3.js";
+
+// Create a `Connection` object with a WebSocket endpoint.
+const connection = new Connection("https://api.devnet.solana.com", {
+  wsEndpoint: "wss://api.devnet.solana.com",
+  commitment: "confirmed",
+});
+
+// Subscribe to RPC events and listen to notifications.
+const wallet = new PublicKey("1234..5678");
+connection.onAccountChange(wallet, (accountInfo) => {
+  console.log(accountInfo);
+});
+```
+
+```ts title="Kit"
+import { address, createSolanaRpcSubscriptions } from "@solana/kit";
+
+// Create an RPC subscriptions proxy object.
+const rpcSubscriptions = createSolanaRpcSubscriptions(
+  "wss://api.devnet.solana.com"
+);
+
+// Use an `AbortController` to cancel the subscriptions.
+const abortController = new AbortController();
+
+// Subscribe to RPC events.
+const wallet = address("1234..5678");
+const accountNotifications = await rpcSubscriptions
+  .accountNotifications(wallet, { commitment: "confirmed" })
+  .subscribe({ abortSignal: abortController.signal });
+
+try {
+  // Listen to event notifications.
+  for await (const accountInfo of accountNotifications) {
+    console.log(accountInfo);
+  }
+} catch (e) {
+  // Gracefully handle subscription disconnects.
+}
+```
+
+Note that, although `Rpc` and `RpcSubscriptions` look like classes, they are actually [`Proxy` objects](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy). This means they dynamically construct RPC requests or subscriptions based on method names and parameters. TypeScript is then used to provide type safety for the RPC API, making it easy to discover available RPC methods while keeping the library lightweight. Regardless of whether your RPC supports 1 method or 100, the bundle size remains unchanged.
+
+## Fetching and decoding accounts
+
+Now that we know how to send RPC requests, fetching one or more on-chain accounts is as simple as calling the appropriate RPC method. For example, here's how to retrieve an account using its address:
+
+```ts title="Web3.js"
+import { PublicKey } from "@solana/web3.js";
+
+const wallet = new PublicKey("1234..5678");
+const account = await connection.getAccountInfo(wallet);
+```
+
+```ts title="Kit"
+import { address } from "@solana/kit";
+
+const wallet = address("1234..5678");
+const { value: account } = await rpc.getAccountInfo(wallet).send();
+```
+
+Kit also provides helper functions like` fetchEncodedAccount` and `fetchEncodedAccounts`, which return `MaybeAccount` objects. These objects store the account's address and include an `exists` boolean to indicate whether the account is present on-chain. If `exists` is `true`, the object also contains the expected account info. These helpers also unify the return type of accounts, ensuring consistency regardless of the encoding used to fetch them.
+
+```ts title="Kit"
+import { address, assertAccountExists, fetchEncodedAccount } from "@solana/kit";
+
+const wallet = address("1234..5678");
+const account = await fetchEncodedAccount(rpc, wallet);
+assertAccountExists(account);
+account.data satisfies Uint8Array;
+```
+
+In addition, Kit introduces a new serialization library called `codecs`. Codecs are composable objects for encoding and decoding any type to and from a `Uint8Array`. For example, here's how you can define a codec for a `Person` account by combining multiple codec primitives:
+
+```ts title="Kit"
+import {
+  address,
+  Address,
+  addCodecSizePrefix,
+  Codec,
+  getAddressCodec,
+  getStructCodec,
+  getU32Codec,
+  getU8Codec,
+  getUtf8Codec,
+} from "@solana/kit";
+
+type Person = {
+  age: number;
+  discriminator: number;
+  name: string;
+  wallet: Address;
+};
+
+const personCodec: Codec<Person> = getStructCodec([
+  ["discriminator", getU8Codec()], // A single-byte account discriminator.
+  ["wallet", getAddressCodec()], // A 32-byte account address.
+  ["age", getU8Codec()], // An 8-bit unsigned integer.
+  ["name", addCodecSizePrefix(getUtf8Codec(), getU32Codec())], // A UTF-8 string with a 32-bit length prefix.
+]);
+
+const bytes = personCodec.encode({
+  age: 42,
+  discriminator: 0,
+  name: "Alice",
+  wallet: address("1234..5678"),
+});
+```
+
+[You can read more about codecs here.]()
+
+Once you have a codec for an account's data, you can use the `decodeAccount` function to transform an encoded account into a decoded account.
+
+```ts title="Kit"
+import {
+  address,
+  Codec,
+  decodeAccount,
+  fetchEncodedAccount,
+} from "@solana/kit";
+
+const wallet = address("1234..5678");
+const account = await fetchEncodedAccount(rpc, wallet);
+const decodedAccount = decodeAccount(account, personCodec);
+
+if (decodedAccount.exists) {
+  decodedAccount.data satisfies Person;
+}
+```
+
+## Using program libraries
+
+Fortunately, you don't need to create a custom codec every time you decode an account. Kit provides client libraries for many popular Solana programs that can help with that. For example, System program helpers are available in the `@solana-program/system` library.
+
+These libraries are [generated via Codama](https://github.com/codama-idl/codama), ensuring consistent structure across them. For instance, the `fetchNonce` function from `@solana-program/system` can be used to fetch and decode a `Nonce` account from its address.
+
+```ts title="Kit"
+import { Account, address } from "@solana/kit";
+import { fetchNonce, Nonce } from "@solana-program/system";
+
+const account: Account<Nonce> = await fetchNonce(rpc, address("1234..5678"));
+```
+
+[Check out the "Compatible clients" page](/compatible-clients) for a list of available program libraries compatible with Kit.
+
+## Creating instructions
+
+In addition to fetching and decoding accounts, generated program clients also provide functions for creating instructions. These functions follow the `getXInstruction` naming convention, where `X` is the name of the instruction.
+
+For example, here's how to create a `CreateAccount` instruction using the `SystemProgram` class in Web3.js, followed by the Kit equivalent using the `@solana-program/system` library.
+
+```ts title="Web3.js"
+import { PublicKey, SystemProgram } from "@solana/web3.js";
+
+const transferSol = SystemProgram.transfer({
+  fromPubkey: new PublicKey("2222..2222"),
+  toPubkey: new PublicKey("3333..3333"),
+  lamports: 1_000_000_000, // 1 SOL.
+});
+```
+
+```ts title="Kit"
+import { address, createNoopSigner } from "@solana/kit";
+import { getTransferSolInstruction } from "@solana-program/system";
+
+const transferSol = getTransferSolInstruction({
+  source: createNoopSigner(address("2222..2222")),
+  destination: address("3333..3333"),
+  amount: 1_000_000_000, // 1 SOL.
+});
+```
+
+!!! info "Transaction signers"
+
+    Notice the `createNoopSigner` function in the Kit example. Unlike Web3.js, Kit uses `TransactionSigner` objects when an account needs to act as a signer for an instruction. This allows signers to be extracted from built transactions, enabling automatic transaction signing without manually scanning instructions to find required signers. We'll explore this further in the ["Signing transactions" section below](/upgrade-guide/#signing-transactions).
+
+Now that we know how to create instructions, let's see how to use them to build transactions.
+
+## Building transactions
+
+Web3.js makes a number of assumptions when creating transactions. For example, it defaults to the latest transaction version and uses a recent blockhash for the transaction lifetime. While this improves the developer experience by providing sensible defaults, it comes at the cost of tree-shakeability. If an application only relies on durable nonce lifetimes, it will still be forced to bundle logic related to blockhash lifetimes, even if it's never used.
+
+Kit, on the other hand, makes no assumptions about transactions. Instead, it requires developers to explicitly provide all necessary information using a series of helper functions. These functions progressively transform an empty transaction message into a fully compiled and signed transaction, ready to be sent to the network. This approach ensures strong type safety, allowing helper functions to enforce valid transaction states at compile time.
+
+Since TypeScript cannot re-declare the type of an existing variable, each transaction helper returns a new immutable transaction object with an updated type. To streamline this, Kit provides a `pipe` function, allowing developers to chain transaction helpers together efficiently.
+
+```ts title="Web3.js"
+import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { createInitializeMintInstruction } from "@solana/spl-token";
+
+const latestBlockhash = await connection.getLatestBlockhash();
+const createAccount = SystemProgram.createAccount(createAccountInput);
+const initializeMint = createInitializeMintInstruction(initializeMintInput);
+
+const transaction = new Transaction({ feePayer, ...latestBlockhash })
+  .add(createAccount)
+  .add(initializeMint);
+```
+
+```ts title="Kit"
+import {
+  appendTransactionMessageInstructions,
+  createTransactionMessage,
+  pipe,
+  setTransactionMessageFeePayerSigner,
+  setTransactionMessageLifetimeUsingBlockhash,
+} from "@solana/kit";
+import { getCreateAccountInstruction } from "@solana-program/system";
+import { getInitializeMintInstruction } from "@solana-program/token";
+
+const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+const createAccount = getCreateAccountInstruction(createAccountInput);
+const initializeMint = getInitializeMintInstruction(initializeMintInput);
+
+const transactionMessage = pipe(
+  createTransactionMessage({ version: 0 }),
+  (tx) => setTransactionMessageFeePayerSigner(payer, tx),
+  (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
+  (tx) =>
+    appendTransactionMessageInstructions([createAccount, initializeMint], tx)
+);
+```
+
+## Signing transactions
+
+Both Web3.js and Kit allow keypairs to sign or partially sign transactions. However, Kit leverages the native [CryptoKeyPair](https://developer.mozilla.org/en-US/docs/Web/API/CryptoKeyPair) API to generate and export keypairs securely, without exposing private keys to the environment.
+
+```ts title="Web3.js"
+import { Keypair, Transaction } from "@solana/web3.js";
+
+const payer = Keypair.generate();
+const authority = Keypair.generate();
+
+transaction.sign([payer, authority]);
+```
+
+```ts title="Kit"
+import {
+  compileTransaction,
+  generateKeyPair,
+  signTransaction,
+} from "@solana/kit";
+
+const [payer, authority] = await Promise.all([
+  generateKeyPair(),
+  generateKeyPair(),
+]);
+
+const transaction = compileTransaction(transactionMessage);
+const signedTransaction = await signTransaction(
+  [payer, authority],
+  transaction
+);
+```
+
+Additionally, as mentioned in the ["Creating instructions"](/upgrade-guide/#creating-instructions) section, Kit introduces signer objects. These objects handle transaction and message signing while abstracting away the underlying signing mechanism. This could be using a Crypto KeyPair, a wallet adapter in the browser, a Noop signer, or anything we want. Here are some examples of how signers can be created:
+
+```ts title="Kit"
+import { address, createNoopSigner, generateKeyPairSigner } from "@solana/kit";
+import { useWalletAccountTransactionSendingSigner } from "@solana/react";
+
+// Using CryptoKeyPairs.
+const myKeypairSigner = await generateKeyPairSigner();
+
+// Using the wallet standard.
+const myWalletSigner = useWalletAccountTransactionSendingSigner(
+  account,
+  currentChain
+);
+
+// Using a Noop signer.
+const myNoopSigner = createNoopSigner(address("1234..5678"));
+```
+
+One key advantage of using signers is that they can be passed directly when creating instructions. This enables transaction messages to be aware of the required signers, eliminating the need to manually track them. When this is the case, the `signTransactionMessageWithSigners` function can be used to sign the transaction with all attached signers.
+
+Here's an example of passing signers to both instructions and the transaction fee payer. Notice that `signTransactionMessageWithSigners` doesn't require additional signers to be passed in — it already knows which ones are needed.
+
+```ts title="Kit" hl_lines="16 17 31"
+import { signTransactionMessageWithSigners } from "@solana/kit";
+import { getCreateAccountInstruction } from "@solana-program/system";
+import {
+  getInitializeMintInstruction,
+  TOKEN_PROGRAM_ADDRESS,
+} from "@solana-program/token";
+
+// Create signers.
+const [payer, mint] = await Promise.all([
+  generateKeyPairSigner(),
+  generateKeyPairSigner(),
+]);
+
+// Create the instructions.
+const createAccount = getCreateAccountInstruction({
+  payer, // <- TransactionSigner
+  newAccount: mint, // <- TransactionSigner
+  space,
+  lamports,
+  programAddress: TOKEN_PROGRAM_ADDRESS,
+});
+const initializeMint = getInitializeMintInstruction({
+  mint: mint.address,
+  mintAuthority: address("1234..5678"),
+  decimals: 2,
+});
+
+// Create the transaction.
+const transactionMessage = pipe(
+  createTransactionMessage({ version: 0 }),
+  (tx) => setTransactionMessageFeePayerSigner(payer, tx), // <- TransactionSigner
+  (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
+  (tx) =>
+    appendTransactionMessageInstructions([createAccount, initializeMint], tx)
+);
+
+// Sign the transaction.
+const signedTransaction = await signTransactionMessageWithSigners(
+  transactionMessage
+);
+```
+
+[Read more about signers here.]()
+
+## Sending and confirming transactions
+
+Finally, we can send our signed transaction to the network and wait for confirmation. While there are multiple ways to confirm transactions (e.g., polling, listening for events, etc.), both Web3.js and Kit provide a default strategy that works for most use cases.
+
+```ts title="Web3.js"
+import { Keypair, sendAndConfirmTransaction } from "@solana/web3.js";
+
+// Create keypairs.
+const payer = Keypair.generate();
+const mint = Keypair.generate();
+
+// Sign, send and confirm the transaction.
+const transactionSignature = await sendAndConfirmTransaction(
+  connection,
+  transaction,
+  [feePayer, mint]
+);
+```
+
+```ts title="Kit"
+import {
+  sendAndConfirmTransactionFactory,
+  getSignatureFromTransaction,
+} from "@solana/kit";
+
+// Create a send and confirm function from your RPC and RPC Subscriptions objects.
+const sendAndConfirm = sendAndConfirmTransactionFactory({
+  rpc,
+  rpcSubscriptions,
+});
+
+// Use it to send and confirm any signed transaction.
+const transactionSignature = getSignatureFromTransaction(signedTransaction);
+await sendAndConfirm(signedTransaction, { commitment: "confirmed" });
+```
+
+Notice that the `sendAndConfirm` function does not return the transaction signature. This is because a transaction signature is deterministically known before it is sent. To access it, Kit provides a separate `getSignatureFromTransaction` helper as illustrated in the code snippet above.
+
+Additionally, the `sendAndConfirmTransactionFactory` function requires both an RPC and an RPC Subscriptions object. However, this does not mean that the full RPC and RPC Subscriptions implementations are needed. Only the following API methods must be implemented:
+
+- For the `Rpc` object: `GetEpochInfoApi`, `GetSignatureStatusesApi`, and `SendTransactionApi`.
+- For the `RpcSubscriptions` object: `SignatureNotificationsApi` and `SlotNotificationsApi`.
+
+## Closing words
+
+We've now explored the key differences between Web3.js and Kit, giving you a solid foundation for upgrading your project. Since Kit is a complete rewrite, there's no simple step-by-step migration guide, and the process may take some time.
+
+To ease the transition, Kit provides a `@solana/compat` package, which allows for incremental migration. This package includes functions that convert core types — such as public keys and transactions — between Web3.js and Kit. This means you can start integrating Kit without having to refactor your entire project at once.
+
+```ts title="Kit"
+import { Keypair, PublicKey } from "@solana/web3.js";
+import { createSignerFromKeyPair } from "@solana/kit";
+import {
+  fromLegacyKeypair,
+  fromLegacyPublicKey,
+  fromLegacyTransactionInstruction,
+  fromVersionedTransaction,
+} from "@solana/compat";
+
+// Convert `PublicKeys`.
+const address = fromLegacyPublicKey(new PublicKey("1234..5678"));
+
+// Convert `Keypairs`.
+const cryptoKeypair = await fromLegacyKeypair(Keypair.generate());
+const signer = await createSignerFromKeyPair(cryptoKeypair);
+
+// Convert `TransactionInstruction`.
+const instruction = fromLegacyTransactionInstruction(transactionInstruction);
+
+// Convert `VersionedTransaction`.
+const transaction = fromVersionedTransaction(versionedTransaction);
+```
